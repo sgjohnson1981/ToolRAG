@@ -94,8 +94,7 @@ The server exposes the core functionality of ToolRAG as two MCP tools:
     -   **Output**: The result of the tool execution.
 
 ### Configuration via Environment Variables
-
-You can configure the ToolRAG MCP server to connect to downstream MCP servers using environment variables. This allows you to aggregate multiple tool servers into a single endpoint.
+The ToolRAG MCP server is configured via environment variables.
 
 -   **`TOOLRAG_MCP_SERVERS`**: A comma-separated list of downstream MCP server URLs or commands.
     -   For **HTTP servers**, provide the full URL.
@@ -120,9 +119,32 @@ TOOLRAG_MCP_SERVERS="https://mcp.pipedream.net/token/google_calendar?retries=5&d
 
 In this example, the server will try to connect to the Google Calendar server 5 times with a 2-second delay, while the custom stdio tool will use the default retry settings.
 
-### Example: Launching the Server with a Wrapper Script
+#### Recommended Method: Direct settings.json Configuration
+Most MCP clients support an env property where you can set environment variables for the server command.
 
-If your client (e.g., a VS Code extension) doesn't support setting environment variables directly, you can use a simple wrapper script to launch the server.
+```json
+{
+  "mcp.servers": [
+    {
+      "name": "ToolRAG Server",
+      "command": "pnpm",
+      "arguments": [
+        "--filter",
+        "@antl3x/toolrag",
+        "start:server"
+      ],
+      "env": {
+        "TOOLRAG_MCP_SERVERS": "https://mcp.pipedream.net/token/google_calendar,https://mcp.pipedream.net/token/stripe",
+        "MCP_SERVER_RETRY_ATTEMPTS": "5",
+        "MCP_SERVER_RETRY_DELAY_MS": "2000"
+      }
+    }
+  ]
+}
+```
+
+#### Alternative Method: Wrapper Script
+If, and only if, your client does not support an env property in its configuration, you can use a wrapper script to set the environment variables before launching the server.
 
 **`run.sh` (for Linux and macOS):**
 

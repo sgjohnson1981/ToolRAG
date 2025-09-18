@@ -7,7 +7,9 @@ import crypto from 'crypto';
 import { Tool as OpenAITool } from 'openai/src/resources/responses/responses.js';
 import { z } from 'zod';
 import type { EmbeddingProvider } from './EmbeddingProvider.js';
+import { EmbeddingProviderCohere } from './EmbeddingProviderCohere.js';
 import { EmbeddingProviderGoogle } from './EmbeddingProviderGoogle.js';
+import { EmbeddingProviderOllama } from './EmbeddingProviderOllama.js';
 import { EmbeddingProviderOpenAI } from './EmbeddingProviderOpenAI.js';
 import { setupConfig, ToolRAGConfig, ToolRAGConfigInput } from './ToolRAGConfig';
 
@@ -47,15 +49,27 @@ class ToolRAG {
   }
 
   private _initEmbeddingProvider() {
-    switch (this._config.embeddingProvider) {
-      case 'openai':
-        this._embeddingProvider = new EmbeddingProviderOpenAI();
-        break;
-      case 'google':
-        this._embeddingProvider = new EmbeddingProviderGoogle();
-        break;
-      default:
-        throw new Error(`Unsupported embedding provider: ${this._config.embeddingProvider}`);
+    const providerConfig = this._config.embeddingProvider;
+
+    if (typeof providerConfig === 'string') {
+      switch (providerConfig) {
+        case 'openai':
+          this._embeddingProvider = new EmbeddingProviderOpenAI();
+          break;
+        case 'google':
+          this._embeddingProvider = new EmbeddingProviderGoogle();
+          break;
+        case 'ollama':
+          this._embeddingProvider = new EmbeddingProviderOllama();
+          break;
+        case 'cohere':
+          this._embeddingProvider = new EmbeddingProviderCohere();
+          break;
+        default:
+          throw new Error(`Unsupported embedding provider: ${providerConfig}`);
+      }
+    } else {
+      this._embeddingProvider = providerConfig;
     }
   }
 

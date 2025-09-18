@@ -1,14 +1,20 @@
 import { z } from 'zod';
-import { EmbeddingProviderOpenAI } from './EmbeddingProviderOpenAI';
-import { EmbeddingProviderGoogle } from './EmbeddingProviderGoogle';
+import { EmbeddingProviderOpenAI } from './EmbeddingProviderOpenAI.js';
+import { EmbeddingProviderGoogle } from './EmbeddingProviderGoogle.js';
+import { EmbeddingProviderOllama } from './EmbeddingProviderOllama.js';
+import { EmbeddingProviderCohere } from './EmbeddingProviderCohere.js';
 
 const ToolRAGConfigSchema = z.object({
   embeddingProvider: z
     .union([
       z.literal('openai'),
       z.literal('google'),
+      z.literal('ollama'),
+      z.literal('cohere'),
       z.instanceof(EmbeddingProviderOpenAI),
       z.instanceof(EmbeddingProviderGoogle),
+      z.instanceof(EmbeddingProviderOllama),
+      z.instanceof(EmbeddingProviderCohere),
     ])
     .default('openai'),
   mcpServers: z.array(z.string()).default([]),

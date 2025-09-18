@@ -120,7 +120,7 @@ TOOLRAG_MCP_SERVERS="https://mcp.pipedream.net/token/google_calendar?retries=5&d
 In this example, the server will try to connect to the Google Calendar server 5 times with a 2-second delay, while the custom stdio tool will use the default retry settings.
 
 #### Recommended Method: Direct settings.json Configuration
-Most MCP clients support an env property where you can set environment variables for the server command.
+Most MCP clients support an `env` property where you can set environment variables for the server command. When running a local `stdio` server, you must also specify the `cwd` (current working directory) to tell the client where to run the command from.
 
 ```json
 {
@@ -133,6 +133,8 @@ Most MCP clients support an env property where you can set environment variables
         "@antl3x/toolrag",
         "start:server"
       ],
+      // 👇 Set the `cwd` to your local project's root directory
+      "cwd": "/path/to/your/toolrag/project",
       "env": {
         "TOOLRAG_MCP_SERVERS": "https://mcp.pipedream.net/token/google_calendar,https://mcp.pipedream.net/token/stripe",
         "MCP_SERVER_RETRY_ATTEMPTS": "5",

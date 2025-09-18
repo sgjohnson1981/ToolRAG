@@ -42,6 +42,7 @@
   "scripts": {
     "build": "task build",
     "test": "echo \"No tests yet\"",
+    "start:server": "tsx source/server.ts",
     "lint": "task lint",
     "prepublishOnly": "task prepublish"
   },

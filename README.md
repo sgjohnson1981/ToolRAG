@@ -69,6 +69,30 @@ for (const call of response.output.filter(
 }
 ```
 
+## Running as an MCP Server
+
+In addition to being used as a library, ToolRAG can be run as a standalone MCP server. This allows any MCP-compatible client to connect to it and use its intelligent tool discovery and execution capabilities. The server communicates over `stdio`.
+
+### How to Run the Server
+
+To run the server, use the following command from the root of the repository:
+
+```bash
+pnpm --filter @antl3x/toolrag start:server
+```
+
+### Exposed Tools
+
+The server exposes the core functionality of ToolRAG as two MCP tools:
+
+-   `listTools`: Finds relevant tools for a given query.
+    -   **Input**: `query` (string) - The natural language query to find tools for.
+    -   **Output**: A JSON string containing an array of relevant tools in the OpenAI function format.
+-   `callTool`: Executes a tool with the given name and arguments.
+    -   **Input**: `toolName` (string) - The name of the tool to execute.
+    -   **Input**: `input` (object) - The arguments to pass to the tool.
+    -   **Output**: The result of the tool execution.
+
 ## 🏗️ Architecture
 
 ToolRAG uses a Retrieval-Augmented Generation (RAG) approach optimized for tools:

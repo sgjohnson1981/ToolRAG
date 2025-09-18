@@ -8,8 +8,11 @@ async function main() {
 
   // Initialize ToolRAG
   console.error("Initializing ToolRAG...");
+  const mcpServersEnv = process.env.TOOLRAG_MCP_SERVERS || "";
+  const mcpServers = mcpServersEnv.split(",").filter(Boolean);
+
   const toolRag = await ToolRAG.init({
-    mcpServers: [], // No downstream servers for now, to ensure startup
+    mcpServers,
   });
   console.error("ToolRAG initialized.");
 

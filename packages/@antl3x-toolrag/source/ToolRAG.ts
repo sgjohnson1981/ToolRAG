@@ -1,7 +1,8 @@
 import type { Client as LibSQLClient } from '@libsql/client';
 import { createClient } from '@libsql/client';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { Client, McpError } from '@modelcontextprotocol/sdk/client/index.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { log } from '@utils.js';
 import crypto from 'crypto';
 import { Tool as OpenAITool } from 'openai/src/resources/responses/responses.js';
@@ -76,7 +77,58 @@ class ToolRAG {
   private async _initMcpServers() {
     if (this._config.mcpServers?.length) {
       this._log.info(`Initializing with ${this._config.mcpServers.length} MCP servers`);
+      // Use Promise.all to wait for all servers to be registered
       await Promise.all(this._config.mcpServers.map((server) => this._registerMcpServer(server)));
+    }
+  }
+
+  private async _registerMcpServer(serverUrl: string) {
+    // Default retry settings
+    const globalRetryAttempts = parseInt(process.env.MCP_SERVER_RETRY_ATTEMPTS || '3', 10);
+    const globalRetryDelay = parseInt(process.env.MCP_SERVER_RETRY_DELAY_MS || '1000', 10);
+
+    // Parse per-server retry settings from URL
+    // To handle stdio commands, we treat them as URLs with a dummy protocol
+    const url = new URL(serverUrl.startsWith('stdio:') ? `http://dummyhost/?${serverUrl}` : serverUrl);
+    const perServerRetryAttempts = url.searchParams.get('retries');
+    const perServerRetryDelay = url.searchParams.get('delay');
+
+    const retryAttempts = perServerRetryAttempts ? parseInt(perServerRetryAttempts, 10) : globalRetryAttempts;
+    const retryDelay = perServerRetryDelay ? parseInt(perServerRetryDelay, 10) : globalRetryDelay;
+
+    const client = new Client({ name: serverUrl, version: '0' });
+
+    for (let attempt = 1; attempt <= retryAttempts; attempt++) {
+      try {
+        if (serverUrl.startsWith('stdio:')) {
+          const commandWithArgs = serverUrl.substring(6);
+          const [command, ...args] = commandWithArgs.split(' ');
+          await client.connect(new StdioClientTransport(command, args));
+        } else {
+          await client.connect(new SSEClientTransport(new URL(serverUrl)));
+        }
+
+        this._mcpClients.push(client);
+        const res = await client.listTools();
+        this._log.info(`Found ${res.tools.length} tools from ${serverUrl}`);
+        this._log.info(res.tools.map((tool) => tool.name).join(', '));
+
+        for (const tool of res.tools) {
+          this._toolToClientMap.set(tool.name, client);
+        }
+
+        this._mcpTools.push(...res.tools);
+        await this._refreshToolsEmbeddings();
+        return; // Success, exit the loop
+      } catch (error) {
+        this._log.error(`Attempt ${attempt}/${retryAttempts} failed for ${serverUrl}:`, error);
+        if (attempt < retryAttempts) {
+          await new Promise(resolve => setTimeout(resolve, retryDelay));
+        } else {
+          // Use console.error for final failure to ensure it's visible in client logs
+          console.error(`Failed to connect to downstream server ${serverUrl} after ${retryAttempts} attempts. Skipping.`);
+        }
+      }
     }
   }
 
@@ -120,24 +172,6 @@ class ToolRAG {
       this._log.error('Failed to initialize database:', error);
       throw error;
     }
-  }
-
-  private async _registerMcpServer(url: string) {
-    const client = new Client({ name: url, version: '0' });
-    await client.connect(new SSEClientTransport(new URL(url)));
-    this._mcpClients.push(client);
-
-    const res = await client.listTools();
-    this._log.info(`Found ${res.tools.length} tools from ${url}`);
-    this._log.info(res.tools.map((tool) => tool.name).join(', '));
-
-    // Add each tool to the toolToClientMap
-    for (const tool of res.tools) {
-      this._toolToClientMap.set(tool.name, client);
-    }
-
-    this._mcpTools.push(...res.tools);
-    await this._refreshToolsEmbeddings();
   }
 
   private _formatToolText(tool: MCPTool): string {
@@ -349,16 +383,35 @@ class ToolRAG {
     this._ensureInitialized();
 
     const tool = this._mcpTools.find((t) => t.name === toolName);
-    if (!tool) throw new Error(`Tool ${toolName} not found`);
+    if (!tool) {
+      throw new McpError({
+        code: -32601, // Method not found
+        message: `Tool ${toolName} not found`,
+      });
+    }
 
     const client = this._toolToClientMap.get(toolName);
-    if (!client) throw new Error(`MCP client for tool ${toolName} not found`);
+    if (!client) {
+      throw new McpError({
+        code: -32603, // Internal error
+        message: `MCP client for tool ${toolName} not found`,
+      });
+    }
 
-    const res = await client.callTool({
-      name: toolName,
-      arguments: input,
-    });
-    return res;
+    try {
+      const res = await client.callTool({
+        name: toolName,
+        arguments: input,
+      });
+      return res;
+    } catch (error: any) {
+      this._log.error(`Error calling tool ${toolName} on downstream server:`, error);
+      // Re-throw as a standard MCP error to be propagated to the client
+      throw new McpError({
+        code: -32603, // Internal error
+        message: `Downstream server error calling tool ${toolName}: ${error.message}`,
+      });
+    }
   }
 }
 

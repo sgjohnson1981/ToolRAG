@@ -93,6 +93,57 @@ The server exposes the core functionality of ToolRAG as two MCP tools:
     -   **Input**: `input` (object) - The arguments to pass to the tool.
     -   **Output**: The result of the tool execution.
 
+### Configuration via Environment Variables
+
+You can configure the ToolRAG MCP server to connect to downstream MCP servers using environment variables. This allows you to aggregate multiple tool servers into a single endpoint.
+
+-   **`TOOLRAG_MCP_SERVERS`**: A comma-separated list of downstream MCP server URLs or commands.
+    -   For **HTTP servers**, provide the full URL.
+    -   For **stdio servers**, use the format `stdio:path/to/executable --with --args`.
+
+-   **`MCP_SERVER_RETRY_ATTEMPTS`**: The number of times to retry connecting to a downstream server if it fails on startup. Defaults to `3`.
+
+-   **`MCP_SERVER_RETRY_DELAY_MS`**: The delay in milliseconds between retry attempts. Defaults to `1000`.
+
+#### Per-Server Retry Configuration
+
+You can override the global retry settings for specific servers by adding query parameters to the URL:
+
+-   `retries`: Overrides `MCP_SERVER_RETRY_ATTEMPTS`.
+-   `delay`: Overrides `MCP_SERVER_RETRY_DELAY_MS`.
+
+**Example:**
+
+```
+TOOLRAG_MCP_SERVERS="https://mcp.pipedream.net/token/google_calendar?retries=5&delay=2000,stdio:node my-custom-tool.js"
+```
+
+In this example, the server will try to connect to the Google Calendar server 5 times with a 2-second delay, while the custom stdio tool will use the default retry settings.
+
+### Example: Launching the Server with a Wrapper Script
+
+If your client (e.g., a VS Code extension) doesn't support setting environment variables directly, you can use a simple wrapper script to launch the server.
+
+**`run.sh` (for Linux and macOS):**
+
+```sh
+#!/bin/bash
+export TOOLRAG_MCP_SERVERS="https://mcp.pipedream.net/token/google_calendar,https://mcp.pipedream.net/token/stripe"
+export MCP_SERVER_RETRY_ATTEMPTS=5
+pnpm --filter @antl3x/toolrag start:server
+```
+
+**`run.bat` (for Windows):**
+
+```bat
+@echo off
+set TOOLRAG_MCP_SERVERS="https://mcp.pipedream.net/token/google_calendar,https://mcp.pipedream.net/token/stripe"
+set MCP_SERVER_RETRY_ATTEMPTS=5
+pnpm --filter @antl3x/toolrag start:server
+```
+
+You would then configure your client to execute this script (`/path/to/run.sh` or `C:\path\to\run.bat`) instead of the direct `pnpm` command.
+
 ## 🏗️ Architecture
 
 ToolRAG uses a Retrieval-Augmented Generation (RAG) approach optimized for tools:

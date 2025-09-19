@@ -39,14 +39,8 @@ pnpm add @antl3x/toolrag
 import { ToolRAG } from "@antl3x/toolrag";
 import OpenAI from "openai";
 
-// Initialize ToolRAG with MCP servers
-const toolRag = await ToolRAG.init({
-  mcpServers: [
-    "https://mcp.pipedream.net/token/google_calendar",
-    "https://mcp.pipedream.net/token/stripe",
-    // Add as many tool servers as you need!
-  ],
-});
+// Initialize ToolRAG
+const toolRag = await ToolRAG.init();
 
 const userQuery =
   "What events do I have tomorrow? Also, check my stripe balance.";
@@ -93,34 +87,76 @@ The server exposes the core functionality of ToolRAG as two MCP tools:
     -   **Input**: `input` (object) - The arguments to pass to the tool.
     -   **Output**: The result of the tool execution.
 
-### Configuration via Environment Variables
-The ToolRAG MCP server is configured via environment variables.
+### Configuration via JSON File
+The ToolRAG MCP server is configured exclusively through a JSON file, controlled by two environment variables.
 
--   **`TOOLRAG_MCP_SERVERS`**: A comma-separated list of downstream MCP server URLs or commands.
-    -   For **HTTP servers**, provide the full URL.
-    -   For **stdio servers**, use the format `stdio:path/to/executable --with --args`.
+-   **`TOOLRAG_MCP_CONFIG_PATH`**: The absolute path to your JSON configuration file. If this variable is not set, the server will start, but no downstream tool servers will be launched.
+
+-   **`TOOLRAG_DOWNSTREAM_SERVERS`**: Specifies which servers to launch from the configuration file.
+    -   To launch a specific set of servers, provide a comma-separated list of their names (e.g., `"server1,server2,server3"`).
+    -   To launch all servers defined in the file, use the special keyword `"all"`.
+    -   **Important**: The list must not contain any leading/trailing whitespace or empty entries (e.g., `"server1, ,server2"` is invalid).
+    -   If this variable is not set or is an empty string, no servers will be launched.
 
 -   **`MCP_SERVER_RETRY_ATTEMPTS`**: The number of times to retry connecting to a downstream server if it fails on startup. Defaults to `3`.
 
 -   **`MCP_SERVER_RETRY_DELAY_MS`**: The delay in milliseconds between retry attempts. Defaults to `1000`.
 
-#### Per-Server Retry Configuration
+#### JSON Configuration Format
+The server supports two flexible JSON formats for defining your tool servers.
 
-You can override the global retry settings for specific servers by adding query parameters to the URL:
+**1. Object of Objects (Recommended)**
 
--   `retries`: Overrides `MCP_SERVER_RETRY_ATTEMPTS`.
--   `delay`: Overrides `MCP_SERVER_RETRY_DELAY_MS`.
+The top-level key must be `mcpServers`. Each key inside this object is the server's unique name.
 
-**Example:**
-
+```json
+{
+  "mcpServers": {
+    "My Server": {
+      "command": "python",
+      "args": ["server.py", "--verbose", "--port", "8080"],
+      "env": {
+        "API_KEY": "secret-key"
+      }
+    },
+    "Stripe Tools": {
+        "transport": {
+            "type": "sse",
+            "url": "https://mcp.pipedream.net/token/stripe"
+        }
+    }
+  }
+}
 ```
-TOOLRAG_MCP_SERVERS="https://mcp.pipedream.net/token/google_calendar?retries=5&delay=2000,stdio:node my-custom-tool.js"
+
+**2. Array of Objects**
+
+The top-level key must be `servers`. Each object in the array must have a unique `name` property.
+
+```json
+{
+  "servers": [
+    {
+      "name": "File Explorer",
+      "transport": {
+        "type": "stdio",
+        "command": "python",
+        "args": ["/path/to/file_explorer_server.py"]
+      }
+    },
+    {
+      "name": "Stripe Tools",
+        "transport": {
+            "type": "sse",
+            "url": "https://mcp.pipedream.net/token/stripe"
+        }
+    }
+  ]
+}
 ```
 
-In this example, the server will try to connect to the Google Calendar server 5 times with a 2-second delay, while the custom stdio tool will use the default retry settings.
-
-#### Recommended Method: Direct settings.json Configuration
-Most MCP clients support an `env` property where you can set environment variables for the server command. When running a local `stdio` server, you must also specify the `cwd` (current working directory) to tell the client where to run the command from.
+#### Example `settings.json` Configuration
+To run the server, you should configure your MCP client (e.g., in VS Code's `settings.json`) by setting the environment variables.
 
 ```json
 {
@@ -136,37 +172,13 @@ Most MCP clients support an `env` property where you can set environment variabl
       // 👇 Set the `cwd` to your local project's root directory
       "cwd": "/path/to/your/toolrag/project",
       "env": {
-        "TOOLRAG_MCP_SERVERS": "https://mcp.pipedream.net/token/google_calendar,https://mcp.pipedream.net/token/stripe",
-        "MCP_SERVER_RETRY_ATTEMPTS": "5",
-        "MCP_SERVER_RETRY_DELAY_MS": "2000"
+        "TOOLRAG_MCP_CONFIG_PATH": "/path/to/your/toolservers.json",
+        "TOOLRAG_DOWNSTREAM_SERVERS": "all"
       }
     }
   ]
 }
 ```
-
-#### Alternative Method: Wrapper Script
-If, and only if, your client does not support an env property in its configuration, you can use a wrapper script to set the environment variables before launching the server.
-
-**`run.sh` (for Linux and macOS):**
-
-```sh
-#!/bin/bash
-export TOOLRAG_MCP_SERVERS="https://mcp.pipedream.net/token/google_calendar,https://mcp.pipedream.net/token/stripe"
-export MCP_SERVER_RETRY_ATTEMPTS=5
-pnpm --filter @antl3x/toolrag start:server
-```
-
-**`run.bat` (for Windows):**
-
-```bat
-@echo off
-set TOOLRAG_MCP_SERVERS="https://mcp.pipedream.net/token/google_calendar,https://mcp.pipedream.net/token/stripe"
-set MCP_SERVER_RETRY_ATTEMPTS=5
-pnpm --filter @antl3x/toolrag start:server
-```
-
-You would then configure your client to execute this script (`/path/to/run.sh` or `C:\path\to\run.bat`) instead of the direct `pnpm` command.
 
 ## 🏗️ Architecture
 

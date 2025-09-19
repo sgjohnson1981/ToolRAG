@@ -1,10 +1,12 @@
 import type { Client as LibSQLClient } from '@libsql/client';
 import { createClient } from '@libsql/client';
-import { Client, McpError } from '@modelcontextprotocol/sdk/client/index.js';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { McpError } from '@modelcontextprotocol/sdk/types.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { log } from '@utils.js';
 import crypto from 'crypto';
+import fs from 'fs';
 import { Tool as OpenAITool } from 'openai/src/resources/responses/responses.js';
 import { z } from 'zod';
 import type { EmbeddingProvider } from './EmbeddingProvider.js';
@@ -24,6 +26,19 @@ const mcpToolSchema = z.object({
 });
 
 type MCPTool = z.infer<typeof mcpToolSchema>;
+
+// Define the structure for a single server configuration
+interface ServerConfig {
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  transport?: {
+    type: 'stdio' | 'sse';
+    command?: string;
+    args?: string[];
+    url?: string;
+  };
+}
 
 class ToolRAG {
   private _mcpClients: Client[] = [];
@@ -75,42 +90,144 @@ class ToolRAG {
   }
 
   private async _initMcpServers() {
-    if (this._config.mcpServers?.length) {
-      this._log.info(`Initializing with ${this._config.mcpServers.length} MCP servers`);
-      // Use Promise.all to wait for all servers to be registered
-      await Promise.all(this._config.mcpServers.map((server) => this._registerMcpServer(server)));
+    const configPath = process.env.TOOLRAG_MCP_CONFIG_PATH;
+    if (!configPath) {
+      this._log.info('TOOLRAG_MCP_CONFIG_PATH not set, skipping MCP server initialization.');
+      return;
+    }
+
+    if (!fs.existsSync(configPath)) {
+      console.error(`Error: Configuration file not found at ${configPath}`);
+      process.exit(1);
+    }
+
+    const serversToLaunch = this._getServerListFromEnv();
+    if (serversToLaunch.length === 0) {
+      return; // Nothing to do
+    }
+
+    const allServers = this._loadAndNormalizeConfig(configPath);
+    const selectedServers = new Map<string, ServerConfig>();
+
+    if (serversToLaunch[0] === 'all') {
+      // Launch all servers from the config file
+      for (const [name, config] of allServers.entries()) {
+        selectedServers.set(name, config);
+      }
+      this._log.info('Initializing all servers from config file...');
+    } else {
+      // Launch a specific subset of servers
+      for (const name of serversToLaunch) {
+        if (!allServers.has(name)) {
+          console.error(`Error: Server "${name}" requested but not defined in config file.`);
+          process.exit(1);
+        }
+        selectedServers.set(name, allServers.get(name)!);
+      }
+      this._log.info(`Initializing selected servers: ${serversToLaunch.join(', ')}`);
+    }
+
+    if (selectedServers.size > 0) {
+      this._log.info(`Initializing with ${selectedServers.size} MCP servers`);
+      await Promise.all(
+        Array.from(selectedServers.entries()).map(([name, config]) =>
+          this._registerMcpServer(name, config)
+        )
+      );
     }
   }
 
-  private async _registerMcpServer(serverUrl: string) {
+  private _getServerListFromEnv(): string[] {
+    const serversEnv = process.env.TOOLRAG_DOWNSTREAM_SERVERS;
+    if (!serversEnv) {
+      this._log.info('TOOLRAG_DOWNSTREAM_SERVERS not set, no servers will be launched.');
+      return [];
+    }
+
+    const serverNames = serversEnv.split(',');
+
+    // Validate names: no trailing spaces, no empty entries
+    for (const name of serverNames) {
+      if (name.trim() !== name) {
+        console.error(`Error: Server name "${name}" in TOOLRAG_DOWNSTREAM_SERVERS contains leading/trailing whitespace.`);
+        process.exit(1);
+      }
+      if (name === '') {
+        console.error('Error: TOOLRAG_DOWNSTREAM_SERVERS contains an empty server name.');
+        process.exit(1);
+      }
+    }
+
+    return serverNames;
+  }
+
+  private _loadAndNormalizeConfig(configPath: string): Map<string, ServerConfig> {
+    const configFileContent = fs.readFileSync(configPath, 'utf-8');
+    const configJson = JSON.parse(configFileContent);
+    const normalizedServers = new Map<string, ServerConfig>();
+
+    const hasMcpServers = 'mcpServers' in configJson;
+    const hasServers = 'servers' in configJson;
+
+    if (hasMcpServers && hasServers) {
+      console.error('Error: Configuration file cannot contain both "mcpServers" and "servers" keys.');
+      process.exit(1);
+    }
+
+    if (hasMcpServers) {
+      // Object of objects format
+      for (const [name, config] of Object.entries(configJson.mcpServers)) {
+        normalizedServers.set(name, config as ServerConfig);
+      }
+    } else if (hasServers) {
+      // Array of objects format
+      for (const server of configJson.servers) {
+        if (server.name) {
+          normalizedServers.set(server.name, server as ServerConfig);
+        }
+      }
+    } else {
+      console.error('Error: Configuration file must contain either a "mcpServers" (object) or "servers" (array) key.');
+      process.exit(1);
+    }
+
+    return normalizedServers;
+  }
+
+  private async _registerMcpServer(name: string, config: ServerConfig) {
     // Default retry settings
-    const globalRetryAttempts = parseInt(process.env.MCP_SERVER_RETRY_ATTEMPTS || '3', 10);
-    const globalRetryDelay = parseInt(process.env.MCP_SERVER_RETRY_DELAY_MS || '1000', 10);
+    const retryAttempts = parseInt(process.env.MCP_SERVER_RETRY_ATTEMPTS || '3', 10);
+    const retryDelay = parseInt(process.env.MCP_SERVER_RETRY_DELAY_MS || '1000', 10);
 
-    // Parse per-server retry settings from URL
-    // To handle stdio commands, we treat them as URLs with a dummy protocol
-    const url = new URL(serverUrl.startsWith('stdio:') ? `http://dummyhost/?${serverUrl}` : serverUrl);
-    const perServerRetryAttempts = url.searchParams.get('retries');
-    const perServerRetryDelay = url.searchParams.get('delay');
-
-    const retryAttempts = perServerRetryAttempts ? parseInt(perServerRetryAttempts, 10) : globalRetryAttempts;
-    const retryDelay = perServerRetryDelay ? parseInt(perServerRetryDelay, 10) : globalRetryDelay;
-
-    const client = new Client({ name: serverUrl, version: '0' });
+    const client = new Client({ name, version: '0' });
 
     for (let attempt = 1; attempt <= retryAttempts; attempt++) {
       try {
-        if (serverUrl.startsWith('stdio:')) {
-          const commandWithArgs = serverUrl.substring(6);
-          const [command, ...args] = commandWithArgs.split(' ');
-          await client.connect(new StdioClientTransport(command, args));
+        const transportType = config.transport?.type;
+        if (transportType === 'stdio' && config.transport?.command) {
+          const transport = new StdioClientTransport({
+            command: config.transport.command,
+            args: config.transport.args,
+            env: config.env,
+          });
+          await client.connect(transport);
+        } else if (transportType === 'sse' && config.transport?.url) {
+          const transport = new SSEClientTransport(new URL(config.transport.url));
+          await client.connect(transport);
+        } else if (config.command) { // Legacy stdio format
+          const transport = new StdioClientTransport({
+            command: config.command,
+            args: config.args,
+            env: config.env,
+          });
+          await client.connect(transport);
         } else {
-          await client.connect(new SSEClientTransport(new URL(serverUrl)));
+          throw new Error(`Invalid transport configuration for server "${name}"`);
         }
 
         this._mcpClients.push(client);
         const res = await client.listTools();
-        this._log.info(`Found ${res.tools.length} tools from ${serverUrl}`);
+        this._log.info(`Found ${res.tools.length} tools from ${name}`);
         this._log.info(res.tools.map((tool) => tool.name).join(', '));
 
         for (const tool of res.tools) {
@@ -121,12 +238,11 @@ class ToolRAG {
         await this._refreshToolsEmbeddings();
         return; // Success, exit the loop
       } catch (error) {
-        this._log.error(`Attempt ${attempt}/${retryAttempts} failed for ${serverUrl}:`, error);
+        this._log.error(`Attempt ${attempt}/${retryAttempts} failed for ${name}:`, error);
         if (attempt < retryAttempts) {
           await new Promise(resolve => setTimeout(resolve, retryDelay));
         } else {
-          // Use console.error for final failure to ensure it's visible in client logs
-          console.error(`Failed to connect to downstream server ${serverUrl} after ${retryAttempts} attempts. Skipping.`);
+          console.error(`Failed to connect to downstream server ${name} after ${retryAttempts} attempts. Skipping.`);
         }
       }
     }
@@ -143,29 +259,34 @@ class ToolRAG {
 
   async _initDatabase() {
     try {
-      this._db = createClient({ url: this._config.database.url });
+      this._db = createClient({
+        url: this._config.database.url,
+      });
       const dimensions = this._embeddingProvider?.getDimensions();
       const tableName = this._db_table_name();
 
-      await this._db.execute(`
-        CREATE TABLE IF NOT EXISTS ${tableName} (
+      await this._db.execute(
+        `CREATE TABLE IF NOT EXISTS ${tableName} (
           id INTEGER PRIMARY KEY,
           tool_name TEXT NOT NULL,
           tool_hash TEXT NOT NULL,
           embedding F32_BLOB(${dimensions}) NOT NULL,
           embedding_text TEXT NOT NULL,
           tool_json TEXT NOT NULL
-        )
-      `);
+        )`,
+        []
+      );
 
-      await this._db.execute(`
-        CREATE INDEX IF NOT EXISTS idx_tool_hash ON ${tableName}(tool_hash)
-      `);
+      await this._db.execute(
+        `CREATE INDEX IF NOT EXISTS idx_tool_hash ON ${tableName}(tool_hash)`,
+        []
+      );
 
-      await this._db.execute(`
-        CREATE INDEX IF NOT EXISTS idx_tool_embeddings_vector 
-        ON ${tableName}(libsql_vector_idx(embedding))
-      `);
+      await this._db.execute(
+        `CREATE INDEX IF NOT EXISTS idx_tool_embeddings_vector
+        ON ${tableName}(libsql_vector_idx(embedding))`,
+        []
+      );
 
       this._log.info(`Database initialized at ${this._config.database.url}`);
     } catch (error) {
@@ -218,8 +339,9 @@ class ToolRAG {
       hash: this._hashTool(tool),
     }));
 
-    const existingHashes = await this._db!.execute({
-      sql: `SELECT tool_hash FROM ${this._db_table_name()}`,
+    const dbToolsResult = await this._db!.execute({
+      sql: `SELECT tool_name FROM ${tableName}`,
+      args: [],
     });
 
     const hashSet = new Set(existingHashes.rows.map((row) => row.tool_hash as string));
@@ -243,20 +365,20 @@ class ToolRAG {
         const tableName = this._db_table_name();
 
         // Try update first, then insert if not exists
-        const updateResult = await this._db!.execute({
-          sql: `UPDATE ${tableName} 
+    const updateResult = await this._db!.execute({
+      sql: `UPDATE ${tableName}
                 SET tool_hash = ?, embedding = ?, tool_json = ?, embedding_text = ?
                 WHERE tool_name = ?`,
-          args: [toolHash, embeddingBuffer, toolJson, toolText, toolName],
-        });
+      args: [toolHash, embeddingBuffer, toolJson, toolText, toolName],
+    });
 
         if (!updateResult.rowsAffected) {
-          await this._db!.execute({
-            sql: `INSERT INTO ${tableName} 
+      await this._db!.execute({
+        sql: `INSERT INTO ${tableName}
                   (tool_name, tool_hash, embedding, tool_json, embedding_text)
                   VALUES (?, ?, ?, ?, ?)`,
-            args: [toolName, toolHash, embeddingBuffer, toolJson, toolText],
-          });
+        args: [toolName, toolHash, embeddingBuffer, toolJson, toolText],
+      });
         }
       }
 
@@ -276,9 +398,10 @@ class ToolRAG {
       const tableName = this._db_table_name();
 
       // Find tools to remove
-      const dbToolsResult = await this._db!.execute({
-        sql: `SELECT tool_name FROM ${tableName}`,
-      });
+    const existingHashes = await this._db!.execute({
+      sql: `SELECT tool_hash FROM ${this._db_table_name()}`,
+      args: [],
+    });
 
       const dbToolNames = dbToolsResult.rows.map((row) => row.tool_name as string);
       const currentToolNames = this._mcpTools.map((tool) => tool.name);
@@ -293,10 +416,10 @@ class ToolRAG {
       this._log.info(`Found ${toolsToRemove.length} tools to remove from database`);
 
       for (const toolName of toolsToRemove) {
-        await this._db!.execute({
-          sql: `DELETE FROM ${tableName} WHERE tool_name = ?`,
-          args: [toolName],
-        });
+      await this._db!.execute({
+        sql: `DELETE FROM ${tableName} WHERE tool_name = ?`,
+        args: [toolName],
+      });
       }
 
       this._log.info(`Successfully pruned ${toolsToRemove.length} tools`);
@@ -362,7 +485,10 @@ class ToolRAG {
     this._ensureInitialized();
 
     // Check if we have tools in the database
-    const count = await this._db!.execute(`SELECT COUNT(*) as count FROM ${this._db_table_name()}`);
+    const existingHashes = await this._db!.execute({
+      sql: `SELECT tool_hash FROM ${this._db_table_name()}`,
+      args: [],
+    });
     const toolCount = (count.rows[0].count as number) || 0;
 
     if (toolCount === 0) {

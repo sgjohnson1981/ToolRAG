@@ -8,12 +8,7 @@ async function main() {
 
   // Initialize ToolRAG
   console.error("Initializing ToolRAG...");
-  const mcpServersEnv = process.env.TOOLRAG_MCP_SERVERS || "";
-  const mcpServers = mcpServersEnv.split(",").filter(Boolean);
-
-  const toolRag = await ToolRAG.init({
-    mcpServers,
-  });
+  const toolRag = await ToolRAG.init();
   console.error("ToolRAG initialized.");
 
   const server = new McpServer({
@@ -43,15 +38,15 @@ async function main() {
   // Register the `callTool` tool using the older .tool() method
   server.tool(
     "callTool",
-    {
+    z.object({
       toolName: z.string().describe("The name of the tool to execute."),
       input: z.any().describe("The arguments to pass to the tool."),
-    },
-    async ({ toolName, input }) => {
-      console.error(`Received callTool request for tool: "${toolName}"`);
-      const result = await toolRag.callTool(toolName, input);
-      console.error(`Tool "${toolName}" executed successfully.`);
-      return result;
+    }),
+    async (params) => {
+      console.error(`Received callTool request for tool: "${params.toolName}"`);
+      const result = await toolRag.callTool(params.toolName, params.input);
+      console.error(`Tool "${params.toolName}" executed successfully.`);
+      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
   );
 

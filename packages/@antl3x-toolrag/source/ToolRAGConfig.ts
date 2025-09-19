@@ -17,7 +17,6 @@ const ToolRAGConfigSchema = z.object({
       z.instanceof(EmbeddingProviderCohere),
     ])
     .default('openai'),
-  mcpServers: z.array(z.string()).default([]),
   rerank: z
     .object({
       enabled: z.boolean().optional(),

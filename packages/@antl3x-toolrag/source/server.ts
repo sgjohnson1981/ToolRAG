@@ -22,7 +22,8 @@ async function main() {
     {
       query: z.string().describe("The natural language query to find tools for."),
     },
-    async ({ query }) => {
+    async (args, extra) => {
+      const { query } = args;
       console.error(`Received listTools request with query: "${query}"`);
       const tools = await toolRag.listTools(query);
       console.error(`Found ${tools.length} relevant tools.`);
@@ -38,14 +39,15 @@ async function main() {
   // Register the `callTool` tool using the older .tool() method
   server.tool(
     "callTool",
-    z.object({
+    {
       toolName: z.string().describe("The name of the tool to execute."),
       input: z.any().describe("The arguments to pass to the tool."),
-    }),
-    async (params) => {
-      console.error(`Received callTool request for tool: "${params.toolName}"`);
-      const result = await toolRag.callTool(params.toolName, params.input);
-      console.error(`Tool "${params.toolName}" executed successfully.`);
+    },
+    async (args, extra) => {
+      const { toolName, input } = args;
+      console.error(`Received callTool request for tool: "${toolName}"`);
+      const result = await toolRag.callTool(toolName, input);
+      console.error(`Tool "${toolName}" executed successfully.`);
       return { content: [{ type: 'text', text: JSON.stringify(result) }] };
     }
   );

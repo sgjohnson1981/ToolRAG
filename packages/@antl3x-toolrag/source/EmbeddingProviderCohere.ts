@@ -40,7 +40,11 @@ export class EmbeddingProviderCohere implements EmbeddingProvider {
       inputType: 'search_document', // Recommended for RAG
     });
 
-    return response.embeddings[0];
+    if (Array.isArray(response.embeddings)) {
+      return response.embeddings[0] as number[];
+    } else {
+      return response.embeddings as number[];
+    }
   }
 
   getDimensions(): number {

@@ -38,6 +38,7 @@ interface ServerConfig {
     args?: string[];
     url?: string;
   };
+  disabled?: boolean;
 }
 
 class ToolRAG {
@@ -60,7 +61,7 @@ class ToolRAG {
     await toolRAG._initDatabase();
     await toolRAG._initMcpServers();
     toolRAG._log.info('ToolRAG initialized');
-
+  
     return toolRAG;
   }
 
@@ -127,14 +128,12 @@ class ToolRAG {
       this._log.info(`Initializing selected servers: ${serversToLaunch.join(', ')}`);
     }
 
-    if (selectedServers.size > 0) {
-      this._log.info(`Initializing with ${selectedServers.size} MCP servers`);
-      await Promise.all(
-        Array.from(selectedServers.entries()).map(([name, config]) =>
-          this._registerMcpServer(name, config)
-        )
-      );
-    }
+    this._log.info(`Initializing with ${selectedServers.size} MCP servers (ignoring disabled flag)`);
+    await Promise.all(
+      Array.from(selectedServers.entries()).map(([name, config]) =>
+        this._registerMcpServer(name, config)
+      )
+    );
   }
 
   private _getServerListFromEnv(): string[] {
@@ -165,32 +164,27 @@ class ToolRAG {
     const configFileContent = fs.readFileSync(configPath, 'utf-8');
     const configJson = JSON.parse(configFileContent);
     const normalizedServers = new Map<string, ServerConfig>();
-
-    const hasMcpServers = 'mcpServers' in configJson;
-    const hasServers = 'servers' in configJson;
-
-    if (hasMcpServers && hasServers) {
-      console.error('Error: Configuration file cannot contain both "mcpServers" and "servers" keys.');
-      process.exit(1);
-    }
-
-    if (hasMcpServers) {
-      // Object of objects format
-      for (const [name, config] of Object.entries(configJson.mcpServers)) {
+  
+    if (typeof configJson === 'object' && configJson !== null && !Array.isArray(configJson)) {
+      // Direct object format: { "server1": {...}, ... }
+      for (const [name, config] of Object.entries(configJson)) {
         normalizedServers.set(name, config as ServerConfig);
       }
-    } else if (hasServers) {
-      // Array of objects format
-      for (const server of configJson.servers) {
-        if (server.name) {
+    } else if (Array.isArray(configJson)) {
+      // Direct array format: [ {name: "server1", ...}, ... ]
+      for (const server of configJson) {
+        if (server.name && typeof server.name === 'string') {
           normalizedServers.set(server.name, server as ServerConfig);
+        } else {
+          console.error('Error: Each server in array format must have a "name" property.');
+          process.exit(1);
         }
       }
     } else {
-      console.error('Error: Configuration file must contain either a "mcpServers" (object) or "servers" (array) key.');
+      console.error('Error: Configuration file must be an object { "server": {...} } or array [ {name: "server", ...} ].');
       process.exit(1);
     }
-
+  
     return normalizedServers;
   }
 
@@ -334,18 +328,19 @@ class ToolRAG {
     this._log.info('Checking for new or updated tools...');
 
     // Find tools that need updating
+    const tableName = this._db_table_name();
     const toolsWithHashes = this._mcpTools.map((tool) => ({
       tool,
       hash: this._hashTool(tool),
     }));
 
-    const dbToolsResult = await this._db!.execute({
-      sql: `SELECT tool_name FROM ${tableName}`,
-      args: [],
-    });
+    const dbToolsResult = await this._db!.execute(
+      `SELECT tool_name FROM ${tableName}`,
+      []
+    );
 
-    const hashSet = new Set(existingHashes.rows.map((row) => row.tool_hash as string));
-    const toolsToUpdate = toolsWithHashes.filter(({ hash }) => !hashSet.has(hash));
+    const hashSet = new Set(dbToolsResult.rows.map((row) => row.tool_name as string));
+    const toolsToUpdate = toolsWithHashes.filter(({ tool }) => !hashSet.has(tool.name));
 
     if (toolsToUpdate.length === 0) {
       this._log.info('All tools are up-to-date, no new embeddings needed');
@@ -362,23 +357,22 @@ class ToolRAG {
       for (const { toolName, toolText, toolHash, embedding, tool } of newEmbeddings) {
         const toolJson = JSON.stringify(tool);
         const embeddingBuffer = new Float32Array(embedding).buffer;
-        const tableName = this._db_table_name();
 
         // Try update first, then insert if not exists
-    const updateResult = await this._db!.execute({
-      sql: `UPDATE ${tableName}
+    const updateResult = await this._db!.execute(
+      `UPDATE ${tableName}
                 SET tool_hash = ?, embedding = ?, tool_json = ?, embedding_text = ?
                 WHERE tool_name = ?`,
-      args: [toolHash, embeddingBuffer, toolJson, toolText, toolName],
-    });
+      [toolHash, embeddingBuffer, toolJson, toolText, toolName]
+    );
 
         if (!updateResult.rowsAffected) {
-      await this._db!.execute({
-        sql: `INSERT INTO ${tableName}
+      await this._db!.execute(
+        `INSERT INTO ${tableName}
                   (tool_name, tool_hash, embedding, tool_json, embedding_text)
                   VALUES (?, ?, ?, ?, ?)`,
-        args: [toolName, toolHash, embeddingBuffer, toolJson, toolText],
-      });
+        [toolName, toolHash, embeddingBuffer, toolJson, toolText]
+      );
         }
       }
 
@@ -398,12 +392,12 @@ class ToolRAG {
       const tableName = this._db_table_name();
 
       // Find tools to remove
-    const existingHashes = await this._db!.execute({
-      sql: `SELECT tool_hash FROM ${this._db_table_name()}`,
-      args: [],
-    });
+    const existingHashes = await this._db!.execute(
+      `SELECT tool_name FROM ${this._db_table_name()}`,
+      []
+    );
 
-      const dbToolNames = dbToolsResult.rows.map((row) => row.tool_name as string);
+      const dbToolNames = existingHashes.rows.map((row) => row.tool_name as string);
       const currentToolNames = this._mcpTools.map((tool) => tool.name);
       const toolsToRemove = dbToolNames.filter((name) => !currentToolNames.includes(name));
 
@@ -439,15 +433,15 @@ class ToolRAG {
     const tableName = this._db_table_name();
 
     // Use vector search
-    const result = await this._db!.execute({
-      sql: `
-        SELECT te.id, te.tool_name, te.tool_json, 
+    const result = await this._db!.execute(
+      `
+        SELECT te.id, te.tool_name, te.tool_json,
                vector_distance_cos(te.embedding, ?) as distance
         FROM vector_top_k('idx_tool_embeddings_vector', ?, 40) AS vt
         JOIN ${tableName} te ON te.id = vt.id
       `,
-      args: [queryEmbeddingBuffer, queryEmbeddingBuffer],
-    });
+      [queryEmbeddingBuffer, queryEmbeddingBuffer]
+    );
 
     this._log.info(`Found ${result.rows.length} similar tools via vector search`);
 
@@ -485,11 +479,11 @@ class ToolRAG {
     this._ensureInitialized();
 
     // Check if we have tools in the database
-    const existingHashes = await this._db!.execute({
-      sql: `SELECT tool_hash FROM ${this._db_table_name()}`,
-      args: [],
-    });
-    const toolCount = (count.rows[0].count as number) || 0;
+    const countResult = await this._db!.execute(
+      `SELECT COUNT(*) as count FROM ${this._db_table_name()}`,
+      []
+    );
+    const toolCount = (countResult.rows[0]?.count as number) || 0;
 
     if (toolCount === 0) {
       this._log.warn('No tool embeddings found in database, storing them now');
@@ -510,18 +504,12 @@ class ToolRAG {
 
     const tool = this._mcpTools.find((t) => t.name === toolName);
     if (!tool) {
-      throw new McpError({
-        code: -32601, // Method not found
-        message: `Tool ${toolName} not found`,
-      });
+      throw new McpError(-32601, `Tool ${toolName} not found`);
     }
 
     const client = this._toolToClientMap.get(toolName);
     if (!client) {
-      throw new McpError({
-        code: -32603, // Internal error
-        message: `MCP client for tool ${toolName} not found`,
-      });
+      throw new McpError(-32603, `MCP client for tool ${toolName} not found`);
     }
 
     try {
@@ -533,10 +521,7 @@ class ToolRAG {
     } catch (error: any) {
       this._log.error(`Error calling tool ${toolName} on downstream server:`, error);
       // Re-throw as a standard MCP error to be propagated to the client
-      throw new McpError({
-        code: -32603, // Internal error
-        message: `Downstream server error calling tool ${toolName}: ${error.message}`,
-      });
+      throw new McpError(-32603, `Downstream server error calling tool ${toolName}: ${error.message}`);
     }
   }
 }

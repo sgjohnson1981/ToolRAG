@@ -16,7 +16,7 @@ const ToolRAGConfigSchema = z.object({
       z.instanceof(EmbeddingProviderOllama),
       z.instanceof(EmbeddingProviderCohere),
     ])
-    .default('openai'),
+    .default('ollama'),
   rerank: z
     .object({
       enabled: z.boolean().optional(),

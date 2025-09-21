@@ -3,7 +3,6 @@
 <div align="center"><strong>ToolRAG</strong></div>
 <div align="center">Infinity LLM tools, zero context conntraints<br />Context-aware tool retrieval for large language models.</div>
 
-
 # Introduction
 ToolRAG provides a seamless solution for using an unlimited number of function definitions with Large Language Models (LLMs), without worrying about context window limitations, costs, or performance degradation.
 
@@ -87,76 +86,108 @@ The server exposes the core functionality of ToolRAG as two MCP tools:
     -   **Input**: `input` (object) - The arguments to pass to the tool.
     -   **Output**: The result of the tool execution.
 
-### Configuration via JSON File
-The ToolRAG MCP server is configured exclusively through a JSON file, controlled by two environment variables.
+### Exclusive File-Based MCP Server Configuration
 
--   **`TOOLRAG_MCP_CONFIG_PATH`**: The absolute path to your JSON configuration file. If this variable is not set, the server will start, but no downstream tool servers will be launched.
+The ToolRAG MCP server uses an exclusive file-based configuration system via a JSON file. This approach provides flexibility and ease of management for defining downstream MCP servers. Configuration is controlled by environment variables, and the system ignores any servers marked with `"disabled": true`.
 
--   **`TOOLRAG_DOWNSTREAM_SERVERS`**: Specifies which servers to launch from the configuration file.
-    -   To launch a specific set of servers, provide a comma-separated list of their names (e.g., `"server1,server2,server3"`).
-    -   To launch all servers defined in the file, use the special keyword `"all"`.
-    -   **Important**: The list must not contain any leading/trailing whitespace or empty entries (e.g., `"server1, ,server2"` is invalid).
-    -   If this variable is not set or is an empty string, no servers will be launched.
+#### Environment Variables for Setup
 
--   **`MCP_SERVER_RETRY_ATTEMPTS`**: The number of times to retry connecting to a downstream server if it fails on startup. Defaults to `3`.
+- **`TOOLRAG_MCP_CONFIG_PATH`**: Specifies the absolute path to the JSON configuration file containing downstream server definitions. If unset or empty, the server starts without launching any downstream servers (no tools available beyond ToolRAG's core functionality).
 
--   **`MCP_SERVER_RETRY_DELAY_MS`**: The delay in milliseconds between retry attempts. Defaults to `1000`.
+- **`TOOLRAG_DOWNSTREAM_SERVERS`**: Determines which servers from the JSON file to launch.
+  - Use `"all"` to launch every enabled server defined in the file.
+  - Provide a comma-separated list of server names (e.g., `"github-server,code-index,memory"`) to launch a specific subset.
+  - If unset or empty, no servers are launched from the file.
+  - **Note**: Server names must match exactly (case-sensitive), with no leading/trailing whitespace or empty entries in the list.
 
-#### JSON Configuration Format
-The server supports two flexible JSON formats for defining your tool servers.
+- **`MCP_SERVER_RETRY_ATTEMPTS`**: Number of retry attempts to connect to a downstream server on startup failure. Defaults to `3`.
 
-**1. Object of Objects (Recommended)**
+- **`MCP_SERVER_RETRY_DELAY_MS`**: Delay in milliseconds between retry attempts. Defaults to `1000`.
 
-The top-level key must be `mcpServers`. Each key inside this object is the server's unique name.
+#### JSON Configuration Structure
+
+The JSON file supports two formats for defining MCP servers. Servers with `"disabled": true` are automatically ignored and not launched, regardless of the `TOOLRAG_DOWNSTREAM_SERVERS` setting.
+
+**1. Object-of-Objects Format (Recommended)**
+
+The root object must contain a key `"mcpServers"`, where each sub-key is a unique server name, and the value is the server configuration object (optionally including `"disabled": true`).
 
 ```json
 {
   "mcpServers": {
-    "My Server": {
-      "command": "python",
-      "args": ["server.py", "--verbose", "--port", "8080"],
+    "github-server": {
+      "transport": {
+        "type": "sse",
+        "url": "https://github-mcp.example.com/token/github"
+      },
+      "disabled": false
+    },
+    "code-index": {
+      "command": "uvx",
+      "args": ["code-index-mcp"],
       "env": {
-        "API_KEY": "secret-key"
+        "PROJECT_PATH": "/path/to/project"
       }
     },
-    "Stripe Tools": {
-        "transport": {
-            "type": "sse",
-            "url": "https://mcp.pipedream.net/token/stripe"
-        }
+    "memory": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-memory"]
+    },
+    "disabled-example": {
+      "command": "some-command",
+      "disabled": true
     }
   }
 }
 ```
 
-**2. Array of Objects**
+**2. Array-of-Objects Format**
 
-The top-level key must be `servers`. Each object in the array must have a unique `name` property.
+The root object must contain a key `"servers"`, where the value is an array of server objects. Each object requires a unique `"name"` property (optionally including `"disabled": true`).
 
 ```json
 {
   "servers": [
     {
-      "name": "File Explorer",
+      "name": "github-server",
       "transport": {
-        "type": "stdio",
-        "command": "python",
-        "args": ["/path/to/file_explorer_server.py"]
+        "type": "sse",
+        "url": "https://github-mcp.example.com/token/github"
+      },
+      "disabled": false
+    },
+    {
+      "name": "code-index",
+      "command": "uvx",
+      "args": ["code-index-mcp"],
+      "env": {
+        "PROJECT_PATH": "/path/to/project"
       }
     },
     {
-      "name": "Stripe Tools",
-        "transport": {
-            "type": "sse",
-            "url": "https://mcp.pipedream.net/token/stripe"
-        }
+      "name": "memory",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-memory"]
+    },
+    {
+      "name": "disabled-example",
+      "command": "some-command",
+      "disabled": true
     }
   ]
 }
 ```
 
+#### Launching Servers
+
+- Set `TOOLRAG_MCP_CONFIG_PATH` to your JSON file path (e.g., `/path/to/mcp-servers.json`).
+- Set `TOOLRAG_DOWNSTREAM_SERVERS` to `"all"` to launch all non-disabled servers, or a comma-separated list like `"github-server,code-index,memory"` for a subset.
+- Disabled servers (e.g., those with `"disabled": true`) are skipped entirely.
+- For stdio-based servers (e.g., code-index, memory), the `command` and `args` define how to spawn the process. For SSE-based (e.g., github-server), use the `transport` object with `url`.
+
 #### Example `settings.json` Configuration
-To run the server, you should configure your MCP client (e.g., in VS Code's `settings.json`) by setting the environment variables.
+
+Configure your MCP client (e.g., VS Code's `settings.json`) to run ToolRAG with the new system:
 
 ```json
 {
@@ -169,10 +200,10 @@ To run the server, you should configure your MCP client (e.g., in VS Code's `set
         "@antl3x/toolrag",
         "start:server"
       ],
-      // 👇 Set the `cwd` to your local project's root directory
+      // Set the cwd to your local project's root directory
       "cwd": "/path/to/your/toolrag/project",
       "env": {
-        "TOOLRAG_MCP_CONFIG_PATH": "/path/to/your/toolservers.json",
+        "TOOLRAG_MCP_CONFIG_PATH": "/path/to/your/mcp-servers.json",
         "TOOLRAG_DOWNSTREAM_SERVERS": "all"
       }
     }

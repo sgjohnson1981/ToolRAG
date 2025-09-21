@@ -1,0 +1,27 @@
+[
+  {
+    "name": "code-index",
+    "command": "uvx",
+    "args": ["code-index-mcp"],
+    "env": {}
+  },
+  {
+    "name": "memory",
+    "command": "npx",
+    "args": ["-y", "@modelcontextprotocol/server-memory"],
+    "env": {}
+  },
+  {
+    "name": "github",
+    "transport": {
+      "type": "sse",
+      "url": "http://localhost:8080/sse"
+    }
+  },
+  {
+    "name": "disabled-server",
+    "disabled": true,
+    "command": "echo",
+    "args": ["disabled"]
+  }
+]
